@@ -14,11 +14,11 @@ class PrerequisiteLogic(BaseModel):
     )
 
 class CourseModel(BaseModel):
-    course_id: str = Field(..., description="The canonical ID, e.g., 'CS 321'")
-    title: str = Field(..., description="The full title of the course")
+    course_id: str = Field(..., description="Course ID, for example CS321")
+    title: str = Field(..., description="Course title, for example 'Software Engineering'")
     department: str = Field(..., description="The issuing department")
     units: int = Field(..., description="Number of credit units")
-    description: str = Field(..., description="The raw catalog description")
+    description: str = Field(..., description="Course description")
 
     prerequisites: Optional[List[PrerequisiteLogic]] = Field(
         default=None, description="Structured prerequisite logic"
