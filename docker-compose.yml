@@ -1,11 +1,11 @@
 services:
   db:
     image: ankane/pgvector:latest
-    container_name: pioneerpath_db
+    container_name: pioneerplanner
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: pioneerpath
+      POSTGRES_DB: pioneerplannerdb
     ports:
       - "5432:5432"
     volumes:

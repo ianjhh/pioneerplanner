@@ -1,25 +1,25 @@
--- vector database for course info
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS courses (
-    course_id CHAR(5) PRIMARY KEY,
+    course_id VARCHAR(10) PRIMARY KEY,
     title VARCHAR(255) NOT NULL,
     department VARCHAR(50) NOT NULL,
     units INTEGER NOT NULL,
     description TEXT,
-    embedding vector(1536), --1536 gives balance between cost efficiency and capturing complex meaning
-    
-    -- rules for courses
-    -- example: {"any_of": [{"all_of": ["CS 101", "CS 102"]}, {"course": "Math 201", "min_grade": "B"}]}
-    prerequisite_rule JSONB, 
-    
+    availability TEXT[],   -- e.g. {Fall,Spring} — terms typically offered
+    embedding vector(768),
+    prerequisite_rule JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- course dependency table
-CREATE TABLE IF NOT EXISTS course_dependencies (
+-- prerequisite/dependency edges
+CREATE TABLE IF NOT EXISTS prerequisites (
     id SERIAL PRIMARY KEY,
-    target_course_id CHAR(5) REFERENCES courses(course_id) ON DELETE CASCADE,
-    prereq_course_id CHAR(5) REFERENCES courses(course_id) ON DELETE CASCADE,
-    
+    target_course_id VARCHAR(10) REFERENCES courses(course_id) ON DELETE CASCADE,
+    prereq_course_id VARCHAR(10) REFERENCES courses(course_id) ON DELETE CASCADE,
+    logic_type VARCHAR(3) NOT NULL,        -- 'AND' or 'OR'
+    minimum_grade VARCHAR(2) DEFAULT 'C',
+
     -- no duplicate rows
-    UNIQUE(target_course_id, prereq_course_id)
+    UNIQUE(target_course_id, prereq_course_id, logic_type)
 );

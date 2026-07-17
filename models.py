@@ -20,6 +20,14 @@ class CourseModel(BaseModel):
     units: int = Field(..., description="Number of credit units")
     description: str = Field(..., description="Course description")
 
+    availability: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Terms this course is typically offered in, normalized to a subset of "
+            "['Fall', 'Winter', 'Spring', 'Summer']. Leave empty if not stated or unclear."
+        )
+    )
+
     prerequisites: Optional[List[PrerequisiteLogic]] = Field(
         default=None, description="Structured prerequisite logic"
     )
@@ -33,6 +41,7 @@ if __name__ == "__main__":
         "department": "Computer Science",
         "units": 3,
         "description": "Principles of software engineering. Prerequisite: CS 301 and CS 311.",
+        "availability": ["Fall", "Spring"],
         "prerequisites": [
             {
                 "logic_type": "AND",
@@ -44,4 +53,3 @@ if __name__ == "__main__":
 
     validated_course = CourseModel(**extracted_data)
     print(f"Successfully validated: {validated_course.course_id} - {validated_course.title}")
-

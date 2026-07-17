@@ -1,7 +1,7 @@
 import os
 from typing import TypedDict, Optional, Literal
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, START, END
 from models import CourseModel
@@ -18,49 +18,70 @@ class AgentState(TypedDict):
     error_message: Optional[str]            # Stores error text if validation fails
     retry_count: int
 
-#temperature to 0 for consistent output
-llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash", temperature=0.0)
+# Config pulled from env so you can swap models/hosts without touching code.
+# OLLAMA_MODEL: any model you've pulled with `ollama pull <model>`.
+#   qwen3:8b is a solid default for structured extraction on a single 8GB+ GPU.
+#   Bump to qwen2.5:14b or qwen3:14b if your hardware allows and you want better
+#   AND/OR prerequisite-tree reasoning.
+# OLLAMA_BASE_URL: defaults to the local Ollama server. Change if Ollama runs
+#   elsewhere (e.g. a Docker service name, or a GPU box on your LAN).
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
-# .with_structured_output() tells LLM 
-# to run our Pydantic model as a structural constraint via native tool-calling primitives.
+# Initialize the local Ollama client
+llm = ChatOllama(
+    model=OLLAMA_MODEL,
+    base_url=OLLAMA_BASE_URL,
+    temperature=0,        # Set to 0 to keep the output highly structured and consistent
+)
+
+# Bind the target Pydantic schema to the model.
+# langchain-ollama's with_structured_output defaults to Ollama's native
+# JSON-schema-constrained decoding (requires Ollama >= 0.5), so this works even
+# with models that weren't specifically fine-tuned for tool calling.
 structured_llm = llm.with_structured_output(CourseModel)
 
 async def extraction_node(state: AgentState) -> AgentState:
     """
-    Node 1: Responsible for prompting the LLM and binding the response to the state.
+    Node 1: Prompt the LLM and bind the structured response to the state.
     """
     print(f"\n[Node: Extraction] Attempting extraction. Retry count: {state['retry_count']}")
 
-    # Base extraction prompt
+    # System prompt using our safety {error_feedback} placeholder to avoid brackets parsing bug
     system_prompt = (
         "You are an advanced university registrar agent. Your job is to parse unstructured "
         "course details into precise structural data models. Pay extreme attention to "
-        "prerequisite logic rules (AND/OR trees)."
+        "prerequisite logic rules (AND/OR trees).\n\n"
+        "{error_feedback}"
     )
-
-    # If this is a retry attempt, send error back into prompt
-    if state["error_message"]:
-        system_prompt += f"\n\n CRITICAL FIX REQUIRED: Your previous attempt failed validation with this error: {state['error_message']}. Correct your structural layout."
 
     prompt_template = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
         ("human", "Extract the structured details from this raw course text:\n\n{catalog_text}")
     ])
 
-    # Chain the prompt together with llm instance
     extraction_chain = prompt_template | structured_llm
 
+    # Formulate error feedback if we are on a retry loop
+    error_feedback = ""
+    if state["error_message"]:
+        error_feedback = (
+            f"CRITICAL FIX REQUIRED: Your previous attempt failed validation with this error:\n"
+            f"{state['error_message']}\n"
+            f"Correct your structural layout accordingly."
+        )
+
     try:
-        # Invoke the chain asynchronously
-        result: CourseModel = await extraction_chain.ainvoke({"catalog_text": state["raw_text"]})
+        result: CourseModel = await extraction_chain.ainvoke({
+            "catalog_text": state["raw_text"],
+            "error_feedback": error_feedback
+        })
         
-        # Return updates to the state. LangGraph automatically merges this dict into the main state.
         return {
             "extracted_course": result,
-            "error_message": None # Reset error message if the LLM successfully outputted valid JSON
+            "error_message": None  # Reset error message on success
         }
     except Exception as e:
-        # Catch JSON structure errors or LLM timeouts before they crash the application
         return {
             "error_message": str(e),
             "retry_count": state["retry_count"] + 1
@@ -68,16 +89,15 @@ async def extraction_node(state: AgentState) -> AgentState:
     
 async def validation_node(state: AgentState) -> AgentState:
     """
-    Node 2: Validates extracted data
+    Node 2: Validates extracted data against semantic rules.
     """
     print("[Node: Validation] Inspecting data logic constraints...")
     course = state.get("extracted_course")
     
-    # Fallback if the extraction node crashed internally and passed no course data
     if not course:
         return state 
 
-    # Custom semantic validation rule: A course cannot be its own prerequisite.
+    # Example Rule: A course cannot list itself as its own prerequisite.
     if course.prerequisites:
         for group in course.prerequisites:
             if course.course_id in group.courses:
@@ -92,35 +112,27 @@ async def validation_node(state: AgentState) -> AgentState:
 
 def route_post_validation(state: AgentState) -> Literal["extraction_node", "__end__"]:
     """
-    Determines where the state machine routes next based on data health.
+    Conditional routing path selector based on the state results.
     """
-    # If an error exists and we haven't crossed our budget limit, route back to extraction
     if state["error_message"] and state["retry_count"] < 3:
-        print(f"Routing Rule triggered: Retrying due to validation error: {state['error_message']}")
+        print(f"Routing Rule: Retrying due to validation error: {state['error_message']}")
         return "extraction_node"
     
-    # If data is correct OR we hit our safety limit, exit the graph
-    print("Routing Rule triggered: Terminating state workflow execution.")
+    print("Routing Rule: Terminating state workflow execution.")
     return "__end__"
 
-# Initialize the graph framework passing our state schema contract
+# Graph configuration Setup
 workflow = StateGraph(AgentState)
 
-# Append nodes
 workflow.add_node("extraction_node", extraction_node)
 workflow.add_node("validation_node", validation_node)
 
-# Set the starting point entry gate
 workflow.add_edge(START, "extraction_node")
-
-# Pipe output from extraction directly over into validation
 workflow.add_edge("extraction_node", "validation_node")
 
-# tells LangGraph "after validation_node runs, don't just go to one fixed next step; instead, call a function to decide where to go."
 workflow.add_conditional_edges(
     "validation_node",
     route_post_validation
 )
 
-# Compile the execution pipeline map
 compiled_agent = workflow.compile()
