@@ -9,7 +9,10 @@ load_dotenv()
 
 # Database connection URL (matches docker-compose.yml)
 # asyncpg driver for asynchronous operations
-DATABASE_URL = os.getenv("DB_URL")
+DATABASE_URL = os.getenv(
+    "DB_URL",
+    "postgresql+asyncpg://admin:password@localhost:5432/pioneerplannerdb"
+)
 
 # pool_pre_ping: pings each connection before handing it to your code. If
 # Docker's networking (vpnkit/WSL2) silently dropped a pooled connection —
