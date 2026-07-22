@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Search, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { CourseSearchResult } from "@/types/api";
@@ -11,15 +11,13 @@ export default function SearchPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!query.trim()) return;
-
+  const fetchCourses = async (searchQuery: string) => {
+    if (!searchQuery.trim()) return;
     setLoading(true);
     setError("");
 
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/v1/search?q=${encodeURIComponent(query)}`);
+      const res = await fetch(`http://127.0.0.1:8000/api/v1/search?q=${encodeURIComponent(searchQuery)}`);
       if (!res.ok) throw new Error("Search request failed");
       const data = await res.json();
       setResults(Array.isArray(data.results) ? data.results : []);
@@ -31,23 +29,38 @@ export default function SearchPage() {
     }
   };
 
+  // Automatically fetch initial courses on load
+  useEffect(() => {
+    fetchCourses("CS");
+  }, []);
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    fetchCourses(query);
+  };
+
+  const handleTagClick = (tag: string) => {
+    setQuery(tag);
+    fetchCourses(tag);
+  };
+
   return (
     <div className="flex flex-col items-center max-w-4xl mx-auto py-12">
-      <div className="w-full text-center mb-12">
+      <div className="w-full text-center mb-8">
         <h1 className="text-4xl md:text-5xl font-extrabold text-gray-900 tracking-tight mb-4">
           Discover Your Academic Path
         </h1>
         <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-          Search for courses across the catalog and explore prerequisites instantly using semantic AI.
+          Search over 2,700+ CSU East Bay catalog courses across all departments and explore prerequisite dependencies.
         </p>
       </div>
 
-      <form onSubmit={handleSearch} className="w-full max-w-2xl relative">
+      <form onSubmit={handleSearch} className="w-full max-w-2xl relative mb-6">
         <div className="relative flex items-center">
           <input
             type="text"
-            className="w-full pl-12 pr-24 py-4 rounded-full border border-gray-300 focus:outline-none focus:ring-4 focus:ring-indigo-500/20 focus:border-indigo-500 shadow-sm transition-all text-lg"
-            placeholder="Search for 'Machine Learning', 'CS 321'..."
+            className="w-full pl-12 pr-24 py-4 rounded-full border border-gray-300 focus:outline-none focus:ring-4 focus:ring-indigo-500/20 focus:border-indigo-500 shadow-sm transition-all text-lg text-gray-900"
+            placeholder="Search 'Computer Science', 'BIOL', 'MATH'..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -61,6 +74,21 @@ export default function SearchPage() {
           </button>
         </div>
       </form>
+
+      {/* Quick Filter Chips */}
+      <div className="flex flex-wrap justify-center gap-2 mb-8 max-w-2xl">
+        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider self-center mr-2">Popular:</span>
+        {["CS", "Computer Science", "BIOL", "MATH", "NURS", "KIN", "ENGL", "ART", "ACCT", "MGMT"].map((tag) => (
+          <button
+            key={tag}
+            type="button"
+            onClick={() => handleTagClick(tag)}
+            className="px-3 py-1.5 bg-gray-100 hover:bg-indigo-50 hover:text-indigo-600 text-gray-600 text-xs font-medium rounded-full transition-colors"
+          >
+            {tag}
+          </button>
+        ))}
+      </div>
 
       {error && (
         <div className="mt-8 p-4 bg-red-50 text-red-700 rounded-xl w-full max-w-2xl border border-red-100">
