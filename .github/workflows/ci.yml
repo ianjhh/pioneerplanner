@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  # Allows manually re-running the pipeline from the Actions tab without a new commit
+  workflow_dispatch: {}
+
+# Cancel in-progress runs when a new push is made to the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Security: Enforce least-privilege token permissions by default.
+# Grant additional scopes per-job only if a step actually needs them.
+permissions:
+  contents: read
+
+jobs:
+  # Job 1: Fast Static Analysis (fails fast before running the test matrix)
+  quality-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install dependencies strictly from lockfile
+        run: uv sync --locked --all-extras --dev
+      - name: Lint & Format Check (Ruff)
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Static Type Checking (Mypy)
+        run: uv run mypy .
+
+  # Job 2: Dependency Vulnerability Scan (runs in parallel with the test matrix)
+  security-audit:
+    needs: quality-checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install dependencies strictly from lockfile
+        run: uv sync --locked --all-extras --dev
+      - name: Audit dependencies for known CVEs
+        run: uvx pip-audit
+
+  # Job 3: Test Suite & Coverage Threshold Enforcement
+  test:
+    needs: quality-checks
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      # Let every matrix leg finish (don't cancel 3.12 just because 3.11 failed) —
+      # you want to see the full failure picture in one run.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+        with:
+          enable-cache: true
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: uv sync --locked --all-extras --dev
+      - name: Run Pytest with Coverage
+        run: uv run pytest --cov=src --cov-report=xml --cov-report=term-missing --cov-fail-under=80
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: coverage-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: coverage.xml
+          retention-days: 14
+          if-no-files-found: warn
