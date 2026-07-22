@@ -1,8 +1,10 @@
 import os
+import json
 from typing import List, Optional, Set, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from langchain_ollama import OllamaEmbeddings
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from api_models import (
     CourseSearchResult,
@@ -23,6 +25,10 @@ embeddings_engine = OllamaEmbeddings(
 )
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+async def get_embedding_with_retry(query: str):
+    return await embeddings_engine.aembed_query(query)
+
 async def vector_search_courses(
     session: AsyncSession,
     query: str,
@@ -30,60 +36,68 @@ async def vector_search_courses(
     department: Optional[str] = None
 ) -> List[CourseSearchResult]:
     """
-    Performs vector similarity search over course descriptions in Postgres via pgvector.
-    Supports optional department filtering.
+    Performs Hybrid Search (Vector + Keyword) combined with Reciprocal Rank Fusion (RRF).
     """
-    # 1. Compute embedding vector for the search query
+    # 1. Compute embedding vector with retry logic (Tenacity)
     try:
-        query_vector = await embeddings_engine.aembed_query(query)
+        query_vector = await get_embedding_with_retry(query)
         embedding_str = str(query_vector)
     except Exception as e:
-        print(f"⚠️ Vector embedding failed ({e}), falling back to text pattern search.")
+        print(f"⚠️ Vector embedding failed after retries ({e}).")
         embedding_str = None
 
+    # 2. Keyword Search (ILIKE)
+    keyword_sql = text("""
+        SELECT course_id, title, department, units, description, availability
+        FROM courses
+        WHERE (LOWER(title) LIKE LOWER(:pattern) 
+               OR LOWER(course_id) LIKE LOWER(:pattern)
+               OR LOWER(description) LIKE LOWER(:pattern))
+          AND (:department IS NULL OR LOWER(department) = LOWER(:department))
+        LIMIT 50;
+    """)
+    kw_result = await session.execute(keyword_sql, {"pattern": f"%{query}%", "department": department})
+    kw_rows = kw_result.fetchall()
+    
+    # 3. Vector Search
+    vec_rows = []
     if embedding_str:
-        # Vector search using pgvector cosine distance operator (<=>)
-        sql = text("""
+        vec_sql = text("""
             SELECT course_id, title, department, units, description, availability,
                    1 - (embedding <=> :embedding) AS similarity
             FROM courses
             WHERE embedding IS NOT NULL
               AND (:department IS NULL OR LOWER(department) = LOWER(:department))
             ORDER BY embedding <=> :embedding
-            LIMIT :limit;
+            LIMIT 50;
         """)
-        result = await session.execute(
-            sql,
-            {
-                "embedding": embedding_str,
-                "department": department,
-                "limit": limit
-            }
-        )
-    else:
-        # Fallback ILIKE text search if embedding engine is unavailable
-        sql = text("""
-            SELECT course_id, title, department, units, description, availability,
-                   0.5 AS similarity
-            FROM courses
-            WHERE (LOWER(title) LIKE LOWER(:pattern) 
-                   OR LOWER(course_id) LIKE LOWER(:pattern)
-                   OR LOWER(description) LIKE LOWER(:pattern))
-              AND (:department IS NULL OR LOWER(department) = LOWER(:department))
-            LIMIT :limit;
-        """)
-        result = await session.execute(
-            sql,
-            {
-                "pattern": f"%{query}%",
-                "department": department,
-                "limit": limit
-            }
-        )
+        vec_result = await session.execute(vec_sql, {"embedding": embedding_str, "department": department, "limit": limit})
+        vec_rows = vec_result.fetchall()
 
-    rows = result.fetchall()
+    # 4. Reciprocal Rank Fusion (RRF)
+    # RRF Score = 1 / (k + rank)
+    k = 60
+    rrf_scores = {}
+    course_data = {}
+
+    for rank, row in enumerate(kw_rows):
+        cid = row.course_id
+        rrf_scores[cid] = rrf_scores.get(cid, 0) + (1.0 / (k + rank + 1))
+        course_data[cid] = row
+
+    for rank, row in enumerate(vec_rows):
+        cid = row.course_id
+        # Boost RRF score slightly based on raw vector similarity if available
+        base_sim = float(row.similarity) if hasattr(row, 'similarity') else 0
+        rrf_scores[cid] = rrf_scores.get(cid, 0) + (1.0 / (k + rank + 1)) + (base_sim * 0.01)
+        course_data[cid] = row
+
+    # Sort by RRF score descending
+    sorted_results = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:limit]
+
     search_results = []
-    for row in rows:
+    for cid, score in sorted_results:
+        row = course_data[cid]
         search_results.append(
             CourseSearchResult(
                 course_id=row.course_id,
@@ -92,7 +106,7 @@ async def vector_search_courses(
                 units=row.units,
                 description=row.description or "",
                 availability=row.availability or [],
-                similarity_score=round(float(row.similarity), 4)
+                similarity_score=round(score, 4)
             )
         )
 

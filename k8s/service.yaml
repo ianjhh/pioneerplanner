@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pioneerplanner-backend-svc
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 8000
+  selector:
+    app: pioneerplanner
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pioneerplanner-redis-svc
+spec:
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app: pioneerplanner-redis

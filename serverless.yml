@@ -1,0 +1,18 @@
+service: pioneerplanner-ingestion
+
+provider:
+  name: aws
+  runtime: python3.10
+  region: us-west-1
+  environment:
+    DB_URL: ${env:DB_URL}
+    PEOPLESOFT_URL: ${env:PEOPLESOFT_URL}
+
+functions:
+  scrape_peoplesoft:
+    handler: peoplesoft_scraper.lambda_handler
+    description: "Periodically scrapes PeopleSoft for live course schedules"
+    timeout: 300
+    events:
+      # Trigger every night at 2 AM
+      - schedule: cron(0 2 * * ? *)

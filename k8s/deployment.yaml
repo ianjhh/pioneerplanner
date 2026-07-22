@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pioneerplanner-backend
+  labels:
+    app: pioneerplanner
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pioneerplanner
+  template:
+    metadata:
+      labels:
+        app: pioneerplanner
+    spec:
+      containers:
+      - name: backend
+        image: your-docker-registry/pioneerplanner-backend:latest
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - secretRef:
+            name: pioneerplanner-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pioneerplanner-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pioneerplanner-redis
+  template:
+    metadata:
+      labels:
+        app: pioneerplanner-redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:alpine
+        ports:
+        - containerPort: 6379
