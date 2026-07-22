@@ -58,5 +58,8 @@ async def stream_rag_chat(query: str, search_results: list) -> str:
     selected_llm = route_model(query)
     chain = prompt | selected_llm
     
-    async for chunk in chain.astream({"context": context_text, "query": query}):
-        yield chunk.content
+    try:
+        async for chunk in chain.astream({"context": context_text, "query": query}):
+            yield chunk.content
+    except Exception as e:
+        yield f"AI Chat is currently offline (Ollama connection error: {type(e).__name__}). Please ensure Ollama is running locally at {OLLAMA_BASE_URL}."

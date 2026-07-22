@@ -25,7 +25,7 @@ embeddings_engine = OllamaEmbeddings(
 )
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(1), wait=wait_exponential(multiplier=1, min=1, max=2), reraise=True)
 async def get_embedding_with_retry(query: str):
     return await embeddings_engine.aembed_query(query)
 
@@ -38,12 +38,12 @@ async def vector_search_courses(
     """
     Performs Hybrid Search (Vector + Keyword) combined with Reciprocal Rank Fusion (RRF).
     """
-    # 1. Compute embedding vector with retry logic (Tenacity)
+    # 1. Compute embedding vector with retry logic
     try:
         query_vector = await get_embedding_with_retry(query)
         embedding_str = str(query_vector)
     except Exception as e:
-        print(f"⚠️ Vector embedding failed after retries ({e}).")
+        print(f"[WARNING] Vector embedding failed ({type(e).__name__}). Falling back to keyword search.")
         embedding_str = None
 
     # 2. Keyword Search (ILIKE)
