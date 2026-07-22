@@ -75,7 +75,7 @@ function GraphComponent() {
     setError("");
     
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/courses/${encodeURIComponent(courseId)}/prereq-path`);
+      const res = await fetch(`http://127.0.0.1:8000/api/v1/courses/${encodeURIComponent(courseId)}/prereq-path`);
       if (res.status === 404) {
         throw new Error("Course not found in catalog.");
       }

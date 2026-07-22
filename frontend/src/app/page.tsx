@@ -19,7 +19,7 @@ export default function SearchPage() {
     setError("");
 
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/search?q=${encodeURIComponent(query)}`);
+      const res = await fetch(`http://127.0.0.1:8000/api/v1/search?q=${encodeURIComponent(query)}`);
       if (!res.ok) throw new Error("Search request failed");
       const data = await res.json();
       setResults(Array.isArray(data.results) ? data.results : []);

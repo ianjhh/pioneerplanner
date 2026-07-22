@@ -20,7 +20,7 @@ export default function ChatPage() {
   }, [messages, isTyping]);
 
   useEffect(() => {
-    const ws = new WebSocket("ws://localhost:8000/api/v1/chat/ws");
+    const ws = new WebSocket("ws://127.0.0.1:8000/api/v1/chat/ws");
     wsRef.current = ws;
     
     ws.onmessage = (event) => {
