@@ -22,9 +22,10 @@ export default function SearchPage() {
       const res = await fetch(`http://localhost:8000/api/v1/search?q=${encodeURIComponent(query)}`);
       if (!res.ok) throw new Error("Search request failed");
       const data = await res.json();
-      setResults(data);
+      setResults(Array.isArray(data.results) ? data.results : []);
     } catch (err: any) {
       setError(err.message || "An error occurred");
+      setResults([]);
     } finally {
       setLoading(false);
     }
@@ -68,7 +69,7 @@ export default function SearchPage() {
       )}
 
       <div className="mt-12 w-full grid grid-cols-1 gap-6">
-        {results.map((course) => (
+        {Array.isArray(results) && results.map((course) => (
           <div key={course.course_id} className="bg-white rounded-2xl p-6 shadow-sm border hover:shadow-md transition-shadow group">
             <div className="flex justify-between items-start mb-4">
               <div>
