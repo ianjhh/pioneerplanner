@@ -20,19 +20,20 @@ export default function ChatPage() {
   }, [messages, isTyping]);
 
   useEffect(() => {
-    // Initialize WebSocket connection
-    wsRef.current = new WebSocket("ws://localhost:8000/api/v1/chat/ws");
+    const ws = new WebSocket("ws://localhost:8000/api/v1/chat/ws");
+    wsRef.current = ws;
     
-    wsRef.current.onmessage = (event) => {
+    ws.onmessage = (event) => {
       const data = event.data;
       if (data === "[DONE]") {
         setIsTyping(false);
       } else {
         setMessages((prev) => {
           const newMessages = [...prev];
-          const lastMsg = newMessages[newMessages.length - 1];
-          if (lastMsg.sender === 'ai' && isTyping) {
+          if (newMessages.length > 0 && newMessages[newMessages.length - 1].sender === 'ai') {
+            const lastMsg = { ...newMessages[newMessages.length - 1] };
             lastMsg.text += data;
+            newMessages[newMessages.length - 1] = lastMsg;
           } else {
             newMessages.push({ sender: 'ai', text: data });
           }
@@ -41,15 +42,18 @@ export default function ChatPage() {
       }
     };
     
-    wsRef.current.onerror = (error) => {
-      console.error("WebSocket error:", error);
+    ws.onerror = (error) => {
+      console.warn("WebSocket status event:", error);
+    };
+
+    ws.onclose = () => {
       setIsTyping(false);
     };
     
     return () => {
-      wsRef.current?.close();
+      ws.close();
     };
-  }, [isTyping]);
+  }, []);
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
