@@ -1,6 +1,6 @@
 import uvicorn
 from typing import Optional
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,7 @@ from retrieval import (
     get_course_detail,
     get_prerequisite_path
 )
+from chat import stream_rag_chat
 
 app = FastAPI(
     title="PioneerPlanner API",
@@ -95,6 +96,31 @@ async def read_prerequisite_path(
             detail=f"Course '{course_id}' not found in catalog."
         )
     return prereq_path
+
+
+@app.websocket("/api/v1/chat/ws")
+async def websocket_chat_endpoint(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
+    """
+    WebSocket endpoint for streaming RAG chat responses.
+    """
+    await websocket.accept()
+    try:
+        while True:
+            # Receive query from frontend
+            query = await websocket.receive_text()
+            
+            # 1. Retrieve context via vector search
+            search_results = await vector_search_courses(session=db, query=query, limit=5)
+            
+            # 2. Stream LLM response
+            async for chunk in stream_rag_chat(query=query, search_results=search_results):
+                await websocket.send_text(chunk)
+                
+            # Send an end-of-message signal
+            await websocket.send_text("[DONE]")
+            
+    except WebSocketDisconnect:
+        print("Client disconnected from chat WebSocket.")
 
 
 if __name__ == "__main__":
