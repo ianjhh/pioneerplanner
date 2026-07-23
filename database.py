@@ -49,12 +49,12 @@ async def test_connection():
             result = await session.execute(text("SELECT extname FROM pg_extension WHERE extname = 'vector';"))
             row = result.fetchone()
             if row:
-                print("✅ Successfully connected to Postgres!")
-                print("✅ pgvector extension is active!")
+                print("[SUCCESS] Successfully connected to Postgres!")
+                print("[SUCCESS] pgvector extension is active!")
             else:
-                print("❌ pgvector extension not found.")
+                print("[ERROR] pgvector extension not found.")
         except Exception as e:
-            print(f"❌ Connection failed: {e}")
+            print(f"[ERROR] Connection failed: {e}")
 
 if __name__ == "__main__":
     asyncio.run(test_connection())

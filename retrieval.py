@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List, Optional, Set, Dict, Any
+from typing import List, Optional, Set, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from langchain_ollama import OllamaEmbeddings
@@ -11,7 +11,8 @@ from api_models import (
     CourseDetailResponse,
     DirectPrereq,
     PrereqTreeNode,
-    PrereqPathResponse
+    PrereqPathResponse,
+    SearchFilters
 )
 
 # Configuration for Ollama embeddings engine matching run.py
@@ -31,51 +32,132 @@ async def get_embedding_with_retry(query: str):
 
 async def vector_search_courses(
     session: AsyncSession,
-    query: str,
+    filters: SearchFilters,
     limit: int = 5,
-    department: Optional[str] = None
-) -> List[CourseSearchResult]:
+    offset: int = 0
+) -> Tuple[List[CourseSearchResult], int]:
     """
-    Performs Hybrid Search (Vector + Keyword) combined with Reciprocal Rank Fusion (RRF).
+    Performs Hybrid Search (Vector + Keyword) combined with Reciprocal Rank Fusion (RRF),
+    applying strict logical filters.
     """
+    query = filters.semantic_query
+    department = filters.departments[0] if filters.departments else None
+    
     # 1. Compute embedding vector with retry logic
-    try:
-        query_vector = await get_embedding_with_retry(query)
-        embedding_str = str(query_vector)
-    except Exception as e:
-        print(f"[WARNING] Vector embedding failed ({type(e).__name__}). Falling back to keyword search.")
-        embedding_str = None
+    embedding_str = None
+    if query and query.strip():
+        try:
+            query_vector = await get_embedding_with_retry(query)
+            embedding_str = str(query_vector)
+        except Exception as e:
+            print(f"[WARNING] Vector embedding failed ({type(e).__name__}). Falling back to keyword search.")
 
-    # 2. Keyword Search (ILIKE)
-    keyword_sql = text("""
+    # 2. Build Keyword Search & Hard Filters (WHERE clauses)
+    hard_filters = []
+    params = {}
+
+    if department:
+        hard_filters.append("LOWER(department) = LOWER(:department)")
+        params["department"] = department
+        
+    if filters.available_terms:
+        # Postgres array overlap operator && to check if any of the available_terms match
+        hard_filters.append("availability && :terms")
+        params["terms"] = filters.available_terms
+        
+    if filters.min_course_level is not None:
+        # Extract numeric part of course_id (e.g., '301' from 'CS 301') and compare
+        hard_filters.append("CAST(SUBSTRING(course_id FROM '[0-9]+') AS INTEGER) >= :min_level")
+        params["min_level"] = filters.min_course_level
+        
+    if filters.max_course_level is not None:
+        hard_filters.append("CAST(SUBSTRING(course_id FROM '[0-9]+') AS INTEGER) <= :max_level")
+        params["max_level"] = filters.max_course_level
+        
+    if filters.exclude_prerequisites:
+        # Exclude courses where target_course_id has these as prerequisites
+        # Convert to tuple for IN clause
+        hard_filters.append("""
+            course_id NOT IN (
+                SELECT target_course_id FROM prerequisites 
+                WHERE prereq_course_id = ANY(:exclude_prereqs)
+            )
+        """)
+        params["exclude_prereqs"] = filters.exclude_prerequisites
+
+    kw_where_clauses = list(hard_filters)
+    if query and query.strip():
+        kw_where_clauses.append("(LOWER(title) LIKE LOWER(:pattern) OR LOWER(course_id) LIKE LOWER(:pattern) OR LOWER(description) LIKE LOWER(:pattern))")
+        params["pattern"] = f"%{query}%"
+
+    kw_where_str = " AND ".join(kw_where_clauses) if kw_where_clauses else "1=1"
+        
+    count_sql = text(f"""
+        SELECT COUNT(*)
+        FROM courses
+        WHERE {kw_where_str}
+    """)
+    count_result = await session.execute(count_sql, params)
+    total_count = count_result.scalar() or 0
+
+    # If no criteria provided at all, return empty
+    if kw_where_str == "1=1" and not embedding_str:
+        return [], 0
+
+    db_limit = limit + offset if embedding_str else limit
+    db_offset = 0 if embedding_str else offset
+    
+    kw_params = dict(params)
+    kw_params["db_limit"] = 200 if embedding_str else db_limit
+    kw_params["db_offset"] = db_offset
+
+    keyword_sql = text(f"""
         SELECT course_id, title, department, units, description, availability
         FROM courses
-        WHERE (LOWER(title) LIKE LOWER(:pattern) 
-               OR LOWER(course_id) LIKE LOWER(:pattern)
-               OR LOWER(description) LIKE LOWER(:pattern))
-          AND (:department IS NULL OR LOWER(department) = LOWER(:department))
-        LIMIT 50;
+        WHERE {kw_where_str}
+        LIMIT :db_limit OFFSET :db_offset;
     """)
-    kw_result = await session.execute(keyword_sql, {"pattern": f"%{query}%", "department": department})
+    kw_result = await session.execute(keyword_sql, kw_params)
     kw_rows = kw_result.fetchall()
     
     # 3. Vector Search
     vec_rows = []
     if embedding_str:
-        vec_sql = text("""
+        vec_where_clauses = ["embedding IS NOT NULL"]
+        if hard_filters:
+            vec_where_clauses.extend(hard_filters)
+            
+        vec_where_str = " AND ".join(vec_where_clauses)
+        vec_params = dict(params)
+        vec_params["embedding"] = embedding_str
+        vec_params["db_limit"] = 200 # Candidate pool size
+
+        vec_sql = text(f"""
             SELECT course_id, title, department, units, description, availability,
                    1 - (embedding <=> :embedding) AS similarity
             FROM courses
-            WHERE embedding IS NOT NULL
-              AND (:department IS NULL OR LOWER(department) = LOWER(:department))
+            WHERE {vec_where_str}
             ORDER BY embedding <=> :embedding
-            LIMIT 50;
+            LIMIT :db_limit;
         """)
-        vec_result = await session.execute(vec_sql, {"embedding": embedding_str, "department": department, "limit": limit})
+        vec_result = await session.execute(vec_sql, vec_params)
         vec_rows = vec_result.fetchall()
 
     # 4. Reciprocal Rank Fusion (RRF)
-    # RRF Score = 1 / (k + rank)
+    # If no query string, we don't need RRF, just return DB rows directly
+    if not query or not query.strip():
+        return [
+            CourseSearchResult(
+                course_id=row.course_id,
+                title=row.title,
+                department=row.department,
+                units=row.units,
+                description=row.description or "",
+                availability=row.availability or [],
+                similarity_score=1.0
+            ) for row in kw_rows
+        ], total_count
+
     k = 60
     rrf_scores = {}
     course_data = {}
@@ -87,16 +169,22 @@ async def vector_search_courses(
 
     for rank, row in enumerate(vec_rows):
         cid = row.course_id
-        # Boost RRF score slightly based on raw vector similarity if available
         base_sim = float(row.similarity) if hasattr(row, 'similarity') else 0
         rrf_scores[cid] = rrf_scores.get(cid, 0) + (1.0 / (k + rank + 1)) + (base_sim * 0.01)
         course_data[cid] = row
 
     # Sort by RRF score descending
-    sorted_results = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:limit]
+    sorted_results = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+    
+    # Ensure total_count isn't lower than the candidates we actually found
+    # (since vector search candidates might exceed strict keyword matches)
+    total_count = max(total_count, len(sorted_results))
+    
+    # Apply offset and limit after ranking
+    paginated_results = sorted_results[offset : offset + limit]
 
     search_results = []
-    for cid, score in sorted_results:
+    for cid, score in paginated_results:
         row = course_data[cid]
         search_results.append(
             CourseSearchResult(
@@ -110,7 +198,7 @@ async def vector_search_courses(
             )
         )
 
-    return search_results
+    return search_results, total_count
 
 
 async def get_course_detail(

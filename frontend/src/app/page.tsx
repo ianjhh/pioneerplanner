@@ -7,23 +7,46 @@ import { CourseSearchResult } from "@/types/api";
 
 export default function SearchPage() {
   const [query, setQuery] = useState("");
+  const [department, setDepartment] = useState("");
   const [results, setResults] = useState<CourseSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  
+  // Pagination State
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [totalCount, setTotalCount] = useState(0);
+  const LIMIT = 20;
 
-  const fetchCourses = async (searchQuery: string) => {
-    if (!searchQuery.trim()) return;
+  const fetchCourses = async (searchQuery: string, dept: string, pageNum: number) => {
+    if (!searchQuery.trim() && !dept) return;
     setLoading(true);
     setError("");
 
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/v1/search?q=${encodeURIComponent(searchQuery)}`);
+      const offset = (pageNum - 1) * LIMIT;
+      let url = `http://127.0.0.1:8000/api/v1/search?limit=${LIMIT}&offset=${offset}`;
+      
+      if (searchQuery.trim()) {
+        url += `&q=${encodeURIComponent(searchQuery)}`;
+      }
+      if (dept) {
+        url += `&department=${encodeURIComponent(dept)}`;
+      }
+
+      const res = await fetch(url);
       if (!res.ok) throw new Error("Search request failed");
       const data = await res.json();
-      setResults(Array.isArray(data.results) ? data.results : []);
+      const fetchedResults = Array.isArray(data.results) ? data.results : [];
+      
+      setResults(fetchedResults);
+      setTotalCount(data.total_count || 0);
+      setHasMore(offset + fetchedResults.length < (data.total_count || 0));
     } catch (err: any) {
       setError(err.message || "An error occurred");
       setResults([]);
+      setTotalCount(0);
+      setHasMore(false);
     } finally {
       setLoading(false);
     }
@@ -31,17 +54,34 @@ export default function SearchPage() {
 
   // Automatically fetch initial courses on load
   useEffect(() => {
-    fetchCourses("CS");
+    setDepartment("CS");
+    fetchCourses("", "CS", 1);
   }, []);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    fetchCourses(query);
+    setPage(1);
+    setDepartment("");
+    fetchCourses(query, "", 1);
   };
 
-  const handleTagClick = (tag: string) => {
-    setQuery(tag);
-    fetchCourses(tag);
+  const handleTagClick = (label: string, dept: string) => {
+    setQuery(label);
+    setDepartment(dept);
+    setPage(1);
+    fetchCourses("", dept, 1);
+  };
+
+  const handleNextPage = () => {
+    const nextPage = page + 1;
+    setPage(nextPage);
+    fetchCourses(query, department, nextPage);
+  };
+
+  const handlePrevPage = () => {
+    const prevPage = Math.max(1, page - 1);
+    setPage(prevPage);
+    fetchCourses(query, department, prevPage);
   };
 
   return (
@@ -60,7 +100,7 @@ export default function SearchPage() {
           <input
             type="text"
             className="w-full pl-12 pr-24 py-4 rounded-full border border-gray-300 focus:outline-none focus:ring-4 focus:ring-indigo-500/20 focus:border-indigo-500 shadow-sm transition-all text-lg text-gray-900"
-            placeholder="Search 'Computer Science', 'BIOL', 'MATH'..."
+            placeholder="e.g. Give me a course related to database, or what is the prerequisite of CS 301?"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -78,14 +118,25 @@ export default function SearchPage() {
       {/* Quick Filter Chips */}
       <div className="flex flex-wrap justify-center gap-2 mb-8 max-w-2xl">
         <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider self-center mr-2">Popular:</span>
-        {["CS", "Computer Science", "BIOL", "MATH", "NURS", "KIN", "ENGL", "ART", "ACCT", "MGMT"].map((tag) => (
+        {[
+          { label: "CS", dept: "CS" },
+          { label: "Computer Science", dept: "CS" },
+          { label: "BIOL", dept: "BIOL" },
+          { label: "MATH", dept: "MATH" },
+          { label: "NURS", dept: "NURS" },
+          { label: "KIN", dept: "KIN" },
+          { label: "ENGL", dept: "ENGL" },
+          { label: "ART", dept: "ART" },
+          { label: "ACCT", dept: "ACCT" },
+          { label: "MGMT", dept: "MGMT" }
+        ].map((tag) => (
           <button
-            key={tag}
+            key={tag.label}
             type="button"
-            onClick={() => handleTagClick(tag)}
+            onClick={() => handleTagClick(tag.label, tag.dept)}
             className="px-3 py-1.5 bg-gray-100 hover:bg-indigo-50 hover:text-indigo-600 text-gray-600 text-xs font-medium rounded-full transition-colors"
           >
-            {tag}
+            {tag.label}
           </button>
         ))}
       </div>
@@ -101,9 +152,16 @@ export default function SearchPage() {
           <div key={course.course_id} className="bg-white rounded-2xl p-6 shadow-sm border hover:shadow-md transition-shadow group">
             <div className="flex justify-between items-start mb-4">
               <div>
-                <span className="inline-block px-3 py-1 bg-indigo-50 text-indigo-700 text-sm font-semibold rounded-full mb-2">
-                  {course.course_id}
-                </span>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="inline-block px-3 py-1 bg-indigo-50 text-indigo-700 text-sm font-semibold rounded-full">
+                    {course.course_id}
+                  </span>
+                  {course.similarity_score !== undefined && (
+                    <span className="inline-block px-2 py-1 bg-amber-50 text-amber-700 text-xs font-semibold rounded-full border border-amber-200">
+                      Relevance Score: {course.similarity_score}
+                    </span>
+                  )}
+                </div>
                 <h3 className="text-xl font-bold text-gray-900">{course.title}</h3>
               </div>
               <span className="text-sm font-medium text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
@@ -140,6 +198,31 @@ export default function SearchPage() {
           </div>
         )}
       </div>
+
+      {/* Pagination Controls */}
+      {results.length > 0 && (
+        <div className="mt-12 flex flex-col items-center gap-4 w-full max-w-2xl">
+          <div className="text-sm font-medium text-gray-500">
+            Showing {(page - 1) * LIMIT + 1}-{Math.min(page * LIMIT, totalCount)} of {totalCount} courses
+          </div>
+          <div className="flex items-center justify-center gap-4 w-full">
+            <button
+              onClick={handlePrevPage}
+              disabled={page === 1 || loading}
+              className="px-6 py-2.5 bg-white border border-gray-300 text-gray-700 font-medium rounded-full hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              &larr; Previous
+            </button>
+            <button
+              onClick={handleNextPage}
+              disabled={!hasMore || loading}
+              className="px-6 py-2.5 bg-white border border-gray-300 text-gray-700 font-medium rounded-full hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Next &rarr;
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

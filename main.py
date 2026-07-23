@@ -8,7 +8,8 @@ from database import AsyncSessionLocal
 from api_models import (
     SearchResponse,
     CourseDetailResponse,
-    PrereqPathResponse
+    PrereqPathResponse,
+    SearchFilters
 )
 from retrieval import (
     vector_search_courses,
@@ -16,6 +17,7 @@ from retrieval import (
     get_prerequisite_path
 )
 from chat import stream_rag_chat
+from query_parser import parse_natural_language_query
 
 app = FastAPI(
     title="PioneerPlanner API",
@@ -52,18 +54,29 @@ async def health_check():
 
 @app.get("/api/v1/search", response_model=SearchResponse, summary="Vector course search")
 async def search_courses(
-    q: str = Query(..., min_length=1, description="Natural language search query e.g. 'machine learning' or 'CS 321'"),
+    q: Optional[str] = Query(default="", description="Natural language search query e.g. 'machine learning' or 'CS 321'"),
     limit: int = Query(default=5, ge=1, le=50, description="Max results to return"),
+    offset: int = Query(default=0, ge=0, description="Pagination offset"),
     department: Optional[str] = Query(default=None, description="Filter by department code e.g. 'CS'"),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Performs semantic vector similarity search using pgvector over course descriptions.
     """
-    results = await vector_search_courses(session=db, query=q, limit=limit, department=department)
+    if not q and not department:
+        return SearchResponse(query="", total_count=0, results=[])
+
+    # 1. Parse natural language query into structured filters using LLM
+    filters = await parse_natural_language_query(q)
+    
+    # 2. Merge in explicit query params if provided
+    if department and department not in filters.departments:
+        filters.departments.append(department)
+
+    results, total_count = await vector_search_courses(session=db, filters=filters, limit=limit, offset=offset)
     return SearchResponse(
-        query=q,
-        total_count=len(results),
+        query=q or "",
+        total_count=total_count,
         results=results
     )
 
@@ -115,7 +128,8 @@ async def websocket_chat_endpoint(websocket: WebSocket, db: AsyncSession = Depen
             query = await websocket.receive_text()
             
             # 1. Retrieve context via vector search
-            search_results = await vector_search_courses(session=db, query=query, limit=5)
+            filters = await parse_natural_language_query(query)
+            search_results, _ = await vector_search_courses(session=db, filters=filters, limit=5)
             
             # 2. Stream LLM response
             async for chunk in stream_rag_chat(query=query, search_results=search_results):
