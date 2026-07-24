@@ -11,8 +11,7 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright dependencies if needed by scrapers
-RUN playwright install --with-deps chromium
+# Playwright browser binaries run on AWS Lambda via Serverless
 
 COPY . .
 
