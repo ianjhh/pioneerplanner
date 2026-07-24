@@ -11,12 +11,15 @@ from models import CourseModel
 load_dotenv()
 
 
+from tenacity import retry, stop_after_attempt, wait_exponential
+
 class AgentState(TypedDict):
     """
     This class defines the exact shape of the data traveling through our graph.
     Every node receives this state, mutates it, and returns the updated fields.
     """
     raw_text: str  # Input text from the university catalog
+    domain: str    # e.g., 'csueb', 'berkeley'
     extracted_course: Optional[CourseModel]  # Stores the structured output when successful
     error_message: Optional[str]  # Stores error text if validation fails
     retry_count: int
@@ -45,12 +48,38 @@ llm = ChatOllama(
 # with models that weren't specifically fine-tuned for tool calling.
 structured_llm = llm.with_structured_output(CourseModel)
 
+# --- Domain Adapters ---
+class DomainAdapter:
+    def format_text(self, raw_text: str) -> str:
+        return raw_text
+
+class CSUEBAdapter(DomainAdapter):
+    def format_text(self, raw_text: str) -> str:
+        # Translate department quirks into standardized text
+        return f"[CSUEB Catalog Entry]\n{raw_text}"
+
+ADAPTERS = {
+    "default": DomainAdapter(),
+    "csueb": CSUEBAdapter(),
+}
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
+async def invoke_extraction_chain(chain, catalog_text: str, error_feedback: str) -> CourseModel:
+    return await chain.ainvoke({
+        "catalog_text": catalog_text,
+        "error_feedback": error_feedback
+    })
+
 
 async def extraction_node(state: AgentState) -> AgentState:
     """
     Node 1: Prompt the LLM and bind the structured response to the state.
     """
     print(f"\n[Node: Extraction] Attempting extraction. Retry count: {state['retry_count']}")
+
+    domain = state.get("domain", "default")
+    adapter = ADAPTERS.get(domain, ADAPTERS["default"])
+    processed_text = adapter.format_text(state["raw_text"])
 
     # System prompt using our safety {error_feedback} placeholder to avoid brackets parsing bug
     system_prompt = (
@@ -77,10 +106,7 @@ async def extraction_node(state: AgentState) -> AgentState:
         )
 
     try:
-        result: CourseModel = await extraction_chain.ainvoke({
-            "catalog_text": state["raw_text"],
-            "error_feedback": error_feedback
-        })
+        result: CourseModel = await invoke_extraction_chain(extraction_chain, processed_text, error_feedback)
         return {
             "extracted_course": result,
             "error_message": None  # Reset error message on success

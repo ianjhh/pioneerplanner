@@ -90,9 +90,12 @@ export default function SearchPage() {
         <h1 className="text-4xl md:text-5xl font-extrabold text-gray-900 tracking-tight mb-4">
           Discover Your Academic Path
         </h1>
-        <p className="text-lg text-gray-600 max-w-2xl mx-auto">
+        <p className="text-lg text-gray-600 max-w-2xl mx-auto mb-4">
           Search over 2,700+ CSU East Bay catalog courses across all departments and explore prerequisite dependencies.
         </p>
+        <Link href="/analytics" className="inline-flex items-center text-indigo-600 hover:text-indigo-800 font-medium bg-indigo-50 px-4 py-2 rounded-full transition-colors">
+          View Course Analytics &rarr;
+        </Link>
       </div>
 
       <form onSubmit={handleSearch} className="w-full max-w-2xl relative mb-6">

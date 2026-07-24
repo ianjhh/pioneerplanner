@@ -1,18 +1,53 @@
+org: pioneerplanner
+app: exit
 service: pioneerplanner-ingestion
 
 provider:
   name: aws
   runtime: python3.10
   region: us-west-1
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - "s3:PutObject"
+        - "s3:GetObject"
+      Resource: "arn:aws:s3:::pioneerplanner-data-bucket/*"
   environment:
-    DB_URL: ${env:DB_URL}
-    PEOPLESOFT_URL: ${env:PEOPLESOFT_URL}
+    DB_URL: ${env:DB_URL, 'postgresql://admin:admin@localhost:5432/pioneerplannerdb'}
+    PEOPLESOFT_URL: ${env:PEOPLESOFT_URL, 'https://cmsweb.cms.csueastbay.edu/psc/EBPRD/EMPLOYEE/SA/c/COMMUNITY_ACCESS.CLASS_SEARCH.GBL'}
+
+package:
+  patterns:
+    - '!node_modules/**'
+    - '!frontend/**'
+    - '!.next/**'
+    - '!tests/**'
+    - '!.git/**'
+    - '!.venv/**'
+    - '!venv/**'
+    - '!__pycache__/**'
+    - 'peoplesoft_scraper.py'
+
+plugins:
+  - serverless-step-functions
 
 functions:
   scrape_peoplesoft:
     handler: peoplesoft_scraper.lambda_handler
     description: "Periodically scrapes PeopleSoft for live course schedules"
     timeout: 300
-    events:
-      # Trigger every night at 2 AM
-      - schedule: cron(0 2 * * ? *)
+
+stepFunctions:
+  stateMachines:
+    ScheduleIngestionPipeline:
+      events:
+        - schedule: cron(0 2 1 1,5,9 ? *)
+      definition:
+        Comment: "Pipeline for ingesting course schedule data from PeopleSoft"
+        StartAt: FetchData
+        States:
+          FetchData:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [scrape_peoplesoft, Arn]
+            End: true

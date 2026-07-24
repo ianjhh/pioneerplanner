@@ -87,8 +87,20 @@ async def vector_search_courses(
 
     kw_where_clauses = list(hard_filters)
     if query and query.strip():
-        kw_where_clauses.append("(LOWER(title) LIKE LOWER(:pattern) OR LOWER(course_id) LIKE LOWER(:pattern) OR LOWER(description) LIKE LOWER(:pattern))")
+        kw_where_clauses.append("""
+            (
+                search_vector @@ plainto_tsquery('english', :query) 
+                OR LOWER(course_id) LIKE LOWER(:pattern) 
+                OR LOWER(title) LIKE LOWER(:pattern)
+            )
+        """)
+        params["query"] = query
         params["pattern"] = f"%{query}%"
+        rank_select = "ts_rank(search_vector, plainto_tsquery('english', :query)) as rank"
+        order_by = "ORDER BY rank DESC"
+    else:
+        rank_select = "0 as rank"
+        order_by = ""
 
     kw_where_str = " AND ".join(kw_where_clauses) if kw_where_clauses else "1=1"
         
@@ -112,9 +124,10 @@ async def vector_search_courses(
     kw_params["db_offset"] = db_offset
 
     keyword_sql = text(f"""
-        SELECT course_id, title, department, units, description, availability
+        SELECT course_id, title, department, units, description, availability, {rank_select}
         FROM courses
         WHERE {kw_where_str}
+        {order_by}
         LIMIT :db_limit OFFSET :db_offset;
     """)
     kw_result = await session.execute(keyword_sql, kw_params)
@@ -258,50 +271,82 @@ async def get_prerequisite_path(
 ) -> Optional[PrereqPathResponse]:
     """
     Computes the complete recursive prerequisite dependency graph and recommended
-    topological course sequence required to take target_course_id.
+    topological course sequence required to take target_course_id using a Recursive CTE.
     """
-    # 1. Fetch target course info
     target_course = await get_course_detail(session, target_course_id)
     if not target_course:
         return None
 
-    # Track visited courses to avoid infinite loops on cyclical catalog edge data
+    # Recursive CTE to fetch all prerequisite edges in one query
+    cte_sql = text("""
+        WITH RECURSIVE prereq_tree AS (
+            SELECT 
+                p.prereq_course_id,
+                p.target_course_id,
+                p.logic_type,
+                p.minimum_grade,
+                1 as depth
+            FROM prerequisites p
+            WHERE LOWER(p.target_course_id) = LOWER(:target_course_id)
+            
+            UNION
+            
+            SELECT 
+                p.prereq_course_id,
+                p.target_course_id,
+                p.logic_type,
+                p.minimum_grade,
+                pt.depth + 1
+            FROM prerequisites p
+            INNER JOIN prereq_tree pt ON LOWER(p.target_course_id) = LOWER(pt.prereq_course_id)
+            WHERE pt.depth < 10
+        )
+        SELECT 
+            pt.prereq_course_id, pt.target_course_id, pt.logic_type, pt.minimum_grade,
+            c.title, c.units
+        FROM prereq_tree pt
+        LEFT JOIN courses c ON LOWER(pt.prereq_course_id) = LOWER(c.course_id);
+    """)
+    cte_res = await session.execute(cte_sql, {"target_course_id": target_course_id})
+    edges = cte_res.fetchall()
+
+    from collections import defaultdict
+    children_map = defaultdict(list)
+    course_info = {}
+    
+    all_required_courses = set()
+    for row in edges:
+        target = row.target_course_id.upper()
+        prereq = row.prereq_course_id.upper()
+        all_required_courses.add(prereq)
+        children_map[target].append(row)
+        if prereq not in course_info:
+            course_info[prereq] = {"title": row.title, "units": row.units}
+
     visited_in_path: Set[str] = set()
-    all_required_courses: Set[str] = set()
     topological_sequence: List[str] = []
 
-    async def build_tree_node(course_code: str, logic_type: Optional[str] = None, min_grade: Optional[str] = None) -> PrereqTreeNode:
+    def build_tree_node(course_code: str, logic_type: Optional[str] = None, min_grade: Optional[str] = None) -> PrereqTreeNode:
         code_upper = course_code.upper()
-
-        # Fetch metadata
-        c_detail = await get_course_detail(session, course_code)
-        title = c_detail.title if c_detail else None
-        units = c_detail.units if c_detail else None
+        
+        # Get metadata
+        if code_upper == target_course_id.upper():
+            title = target_course.title
+            units = target_course.units
+        else:
+            info = course_info.get(code_upper, {})
+            title = info.get("title")
+            units = info.get("units")
 
         if code_upper in visited_in_path:
-            # Prevent circular reference recursion break
-            return PrereqTreeNode(
-                course_id=course_code,
-                title=title,
-                units=units,
-                logic_type=logic_type,
-                minimum_grade=min_grade,
-                prerequisites=[]
-            )
+            return PrereqTreeNode(course_id=course_code, title=title, units=units, logic_type=logic_type, minimum_grade=min_grade, prerequisites=[])
 
         visited_in_path.add(code_upper)
 
         child_nodes = []
-        if c_detail and c_detail.direct_prerequisites:
-            for p in c_detail.direct_prerequisites:
-                prereq_code = p.prereq_course_id
-                all_required_courses.add(prereq_code.upper())
-                child_node = await build_tree_node(
-                    prereq_code,
-                    logic_type=p.logic_type,
-                    min_grade=p.minimum_grade
-                )
-                child_nodes.append(child_node)
+        for edge in children_map.get(code_upper, []):
+            child_node = build_tree_node(edge.prereq_course_id, logic_type=edge.logic_type, min_grade=edge.minimum_grade)
+            child_nodes.append(child_node)
 
         visited_in_path.remove(code_upper)
 
@@ -317,7 +362,7 @@ async def get_prerequisite_path(
             prerequisites=child_nodes
         )
 
-    tree_root = await build_tree_node(target_course.course_id)
+    tree_root = build_tree_node(target_course.course_id)
 
     return PrereqPathResponse(
         target_course_id=target_course.course_id,

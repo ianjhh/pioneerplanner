@@ -3,6 +3,7 @@ from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from database import AsyncSessionLocal
 from api_models import (
@@ -114,6 +115,34 @@ async def read_prerequisite_path(
             detail=f"Course '{course_id}' not found in catalog."
         )
     return prereq_path
+
+
+@app.get("/api/v1/analytics/bottlenecks", summary="Get most prerequisite-heavy courses")
+async def get_prerequisite_bottlenecks(limit: int = Query(default=10, ge=1, le=50), db: AsyncSession = Depends(get_db)):
+    """
+    Returns courses that are most frequently listed as prerequisites for other courses.
+    """
+    sql = text("""
+        SELECT p.prereq_course_id, c.title, COUNT(*) as dependency_count
+        FROM prerequisites p
+        JOIN courses c ON p.prereq_course_id = c.course_id
+        GROUP BY p.prereq_course_id, c.title
+        ORDER BY dependency_count DESC
+        LIMIT :limit
+    """)
+    res = await db.execute(sql, {"limit": limit})
+    bottlenecks = res.fetchall()
+    
+    return {
+        "bottlenecks": [
+            {
+                "course_id": b.prereq_course_id,
+                "title": b.title,
+                "dependency_count": b.dependency_count
+            }
+            for b in bottlenecks
+        ]
+    }
 
 
 @app.websocket("/api/v1/chat/ws")

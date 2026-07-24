@@ -1,10 +1,10 @@
 services:
   db:
     image: ankane/pgvector:latest
-    container_name: pioneerplanner
+    container_name: pioneerplanner_db
     environment:
       POSTGRES_USER: admin
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-admin}
       POSTGRES_DB: pioneerplannerdb
     ports:
       - "5432:5432"
@@ -17,6 +17,35 @@ services:
     container_name: pioneerplanner_redis
     ports:
       - "6379:6379"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pioneerplanner_backend
+    environment:
+      - DB_URL=postgresql+asyncpg://admin:${DB_PASSWORD:-admin}@db:5432/pioneerplannerdb
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: pioneerplanner_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
 
 volumes:
   pgdata:
